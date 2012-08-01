@@ -122,7 +122,7 @@ class Base {
 		//! Framework-mapped PHP globals
 		PHP_Globals='GET|POST|COOKIE|REQUEST|SESSION|FILES|SERVER|ENV',
 		//! HTTP methods for RESTful interface
-		HTTP_Methods='GET|HEAD|POST|PUT|DELETE|OPTIONS';
+		HTTP_Methods='GET|HEAD|POST|PUT|DELETE|OPTIONS|TRACE|CONNECT';
 
 	//@{ Global variables and references to constants
 	protected static
@@ -256,21 +256,17 @@ class Base {
 		$out='';
 		$obj=FALSE;
 		foreach (preg_split('/\[\s*[\'"]?|[\'"]?\s*\]|\.|(->)/',
-			$key,NULL,PREG_SPLIT_NO_EMPTY|PREG_SPLIT_DELIM_CAPTURE) as $fix) {
-			if ($out) {
-				if ($fix=='->') {
-					$obj=TRUE;
-					continue;
-				}
-				elseif ($obj) {
-					$obj=FALSE;
-					$fix='->'.$fix;
-				}
-				else
-					$fix='['.var_export($fix,TRUE).']';
+			$key,NULL,PREG_SPLIT_NO_EMPTY|PREG_SPLIT_DELIM_CAPTURE) as $fix)
+			if (!$out)
+				$out=$fix;
+			elseif ($fix=='->')
+				$obj=TRUE;
+			elseif ($obj) {
+				$obj=FALSE;
+				$out.='->'.$fix;
 			}
-			$out.=$fix;
-		}
+			else
+				$out.='['.self::stringify($fix).']';
 		return $out;
 	}
 
@@ -298,9 +294,9 @@ class Base {
 	static function &ref($key,$set=TRUE) {
 		// Traverse array
 		$matches=preg_split(
-			'/\[\s*[\'"]?|[\'"]?\s*\]|\.|(->)/',self::remix($key),
+			'/\[\s*[\'"]?|[\'"]?\s*\]|\.|(->)/',$key,
 			NULL,PREG_SPLIT_NO_EMPTY|PREG_SPLIT_DELIM_CAPTURE);
-		// Referencing a SESSION variable element auto-starts a session
+		// Referencing SESSION element auto-starts a session
 		if ($matches[0]=='SESSION' && !session_id()) {
 			// Use cookie jar setup
 			call_user_func_array('session_set_cookie_params',
@@ -797,6 +793,10 @@ class F3 extends Base {
 		if (preg_match('/LANGUAGE|LOCALES/',$key) && class_exists('ICU'))
 			// Load appropriate dictionaries
 			ICU::load();
+		elseif ($key=='ENCODING')
+			ini_set('default_charset',$val);
+		elseif ($key=='TZ')
+			date_default_timezone_set($val);
 		// Initialize cache if explicitly defined
 		elseif ($key=='CACHE' && $val)
 			self::$vars['CACHE']=Cache::load();
@@ -1482,8 +1482,8 @@ class F3 extends Base {
 	static function input($fields,$funcs=NULL,
 		$tags=NULL,$filter=FILTER_UNSAFE_RAW,$opt=array(),$assign=TRUE) {
 		$funcs=is_string($funcs)?self::split($funcs):array($funcs);
-		foreach (self::split($fields) as $field) {
-			$found=FALSE;
+		$found=FALSE;
+		foreach (self::split($fields) as $field)
 			// Sanitize relevant globals
 			foreach (explode('|','GET|POST|REQUEST') as $var)
 				if (self::exists($var.'.'.$field)) {
@@ -1496,38 +1496,54 @@ class F3 extends Base {
 					else {
 						$key=self::scrub($key,$tags);
 						$val=filter_var($key,$filter,$opt);
-						foreach ($funcs as $func)
-							if ($func) {
-								if (is_string($func) &&
-									preg_match('/(.+)\s*(?:->|::)\s*(.+)/',
-										$func,$match))
-									// Convert class->method syntax
-									$func=array(new $match[1],$match[2]);
-								if (!is_callable($func)) {
+						$out=NULL;
+						foreach ($funcs as $func) {
+							if (is_string($func)) {
+								$func=self::resolve($func);
+								if (preg_match('/(.+)\s*(->|::)\s*(.+)/s',
+									$func,$match)) {
+									if (!class_exists($match[1]) ||
+										!method_exists($match[1],'__call') &&
+										!method_exists($match[1],$match[3])) {
+										// Invalid handler
+										trigger_error(
+											sprintf(self::TEXT_Form,$field)
+										);
+										return;
+									}
+									$func=array($match[2]=='->'?
+										new $match[1]:$match[1],$match[3]);
+								}
+								elseif (!function_exists($func)) {
 									// Invalid handler
 									trigger_error(
 										sprintf(self::TEXT_Form,$field)
 									);
 									return;
 								}
-								if (!$found) {
-									$out=call_user_func($func,$val,$field);
-									if (!$assign)
-										return $out;
-									if ($out)
-										$key=$out;
-									$found=TRUE;
-								}
-								elseif ($assign && $out)
-									$key=$val;
 							}
+							if (!is_callable($func)) {
+								// Invalid handler
+								trigger_error(
+									sprintf(self::TEXT_Form,$field)
+								);
+								return;
+							}
+							$out=call_user_func($func,$val,$field);
+							$found=TRUE;
+							if (!$assign)
+								return $out;
+							if ($out)
+								$key=$out;
+							elseif ($assign && $out)
+								$key=$val;
+						}
 					}
 				}
-			if (!$found) {
-				// Invalid handler
-				trigger_error(sprintf(self::TEXT_Form,$field));
-				return;
-			}
+		if (!$found) {
+			// Invalid handler
+			trigger_error(sprintf(self::TEXT_Form,$field));
+			return;
 		}
 	}
 
@@ -1687,7 +1703,7 @@ class F3 extends Base {
 		error_log($error['text']);
 		foreach (explode("\n",$out) as $str)
 			if ($str)
-				error_log($str);
+				error_log(strip_tags($str));
 		if ($prior || self::$vars['QUIET'])
 			return;
 		foreach (array('title','text','trace') as $sub)
@@ -1722,23 +1738,24 @@ class F3 extends Base {
 			return;
 		// Handle all exceptions/non-fatal errors
 		error_reporting(E_ALL|E_STRICT);
+		$charset='utf-8';
+		ini_set('default_charset',$charset);
 		ini_set('display_errors',0);
 		ini_set('register_globals',0);
 		// Get PHP settings
 		$ini=ini_get_all(NULL,FALSE);
+		$self=__CLASS__;
 		// Intercept errors and send output to browser
 		set_error_handler(
-			function($errno,$errstr) {
-				if (error_reporting()) {
+			function($errno,$errstr) use($self) {
+				if (error_reporting())
 					// Error suppression (@) is not enabled
-					$self=__CLASS__;
 					$self::error(500,$errstr);
-				}
 			}
 		);
 		// Do the same for PHP exceptions
 		set_exception_handler(
-			function($ex) {
+			function($ex) use($self) {
 				if (!count($trace=$ex->getTrace())) {
 					// Translate exception trace
 					list($trace)=debug_backtrace();
@@ -1752,7 +1769,6 @@ class F3 extends Base {
 						)
 					);
 				}
-				$self=__CLASS__;
 				$self::error(500,$ex->getMessage(),$trace);
 				// PHP aborts at this point
 			}
@@ -1765,7 +1781,7 @@ class F3 extends Base {
 		}
 		// Fix Apache's VirtualDocumentRoot limitation
 		$_SERVER['DOCUMENT_ROOT']=
-			dirname(self::fixslashes($_SERVER['SCRIPT_FILENAME']));
+			self::fixslashes(dirname($_SERVER['SCRIPT_FILENAME']));
 		// Adjust HTTP request time precision
 		$_SERVER['REQUEST_TIME']=microtime(TRUE);
 		if (PHP_SAPI=='cli') {
@@ -1785,16 +1801,6 @@ class F3 extends Base {
 			isset($_SERVER['HTTPS']) && $_SERVER['HTTPS']!='off' ||
 			isset($_SERVER['HTTP_X_FORWARDED_PROTO']) &&
 			$_SERVER['HTTP_X_FORWARDED_PROTO']=='https'?'https':'http';
-		$jar=array(
-			'expire'=>0,
-			'path'=>$base?:'/',
-			'domain'=>isset($_SERVER['SERVER_NAME']) &&
-				is_int(strpos($_SERVER['SERVER_NAME'],'.')) &&
-				!filter_var($_SERVER['SERVER_NAME'],FILTER_VALIDATE_IP)?
-				$_SERVER['SERVER_NAME']:'',
-			'secure'=>($scheme=='https'),
-			'httponly'=>TRUE
-		);
 		self::$vars=array(
 			// Autoload folders
 			'AUTOLOAD'=>'./',
@@ -1810,7 +1816,7 @@ class F3 extends Base {
 			// DNS black lists
 			'DNSBL'=>NULL,
 			// Document encoding
-			'ENCODING'=>'utf-8',
+			'ENCODING'=>$charset,
 			// Last error
 			'ERROR'=>NULL,
 			// Allow/prohibit framework class extension
@@ -1824,7 +1830,16 @@ class F3 extends Base {
 			// Include path for procedural code
 			'IMPORTS'=>'./',
 			// Default cookie settings
-			'JAR'=>$jar,
+			'JAR'=>array(
+				'expire'=>0,
+				'path'=>$base?:'/',
+				'domain'=>isset($_SERVER['SERVER_NAME']) &&
+					is_int(strpos($_SERVER['SERVER_NAME'],'.')) &&
+					!filter_var($_SERVER['SERVER_NAME'],FILTER_VALIDATE_IP)?
+					$_SERVER['SERVER_NAME']:'',
+				'secure'=>($scheme=='https'),
+				'httponly'=>TRUE
+			),
 			// Default language (auto-detect if null)
 			'LANGUAGE'=>NULL,
 			// Autoloaded classes
@@ -1866,6 +1881,8 @@ class F3 extends Base {
 			'THROTTLE'=>0,
 			// Tidy options
 			'TIDY'=>array(),
+			// Default timezone
+			'TZ'=>'UTC',
 			// Framework version
 			'VERSION'=>self::TEXT_AppName.' '.self::TEXT_Version,
 			// Default whois server
