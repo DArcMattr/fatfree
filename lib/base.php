@@ -1895,7 +1895,8 @@ class F3 extends Base {
 			// Sync framework and PHP globals
 			self::$vars[$var]=&$GLOBALS['_'.$var];
 			if (isset($ini['magic_quotes_gpc']) &&
-				$ini['magic_quotes_gpc'] && preg_match('/^[GPCR]/',$var))
+				$ini['magic_quotes_gpc'] && preg_match('/^[GPCR]/',$var) &&
+				self::$vars[$var])
 				// Corrective action on PHP magic quotes
 				array_walk_recursive(
 					self::$vars[$var],
@@ -1905,8 +1906,8 @@ class F3 extends Base {
 				);
 		}
 		// Initialize autoload stack and shutdown sequence
-		spl_autoload_register(__CLASS__.'::autoload',TRUE,TRUE);
-		register_shutdown_function(__CLASS__.'::stop');
+		spl_autoload_register($self.'::autoload',TRUE,TRUE);
+		register_shutdown_function($self.'::stop');
 	}
 
 	/**
@@ -1921,8 +1922,7 @@ class F3 extends Base {
 			// Intercept fatal error
 			self::error(500,sprintf(self::TEXT_Fatal,$error['message']),
 				array($error),TRUE);
-		if (isset(self::$vars['UNLOAD']) &&
-			is_callable(self::$vars['UNLOAD']))
+		if (isset(self::$vars['UNLOAD']))
 			self::call(self::$vars['UNLOAD']);
 	}
 
