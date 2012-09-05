@@ -12,7 +12,7 @@
 	Bong Cosca <bong.cosca@yahoo.com>
 
 		@package Base
-		@version 2.0.12
+		@version 2.0.13
 **/
 
 //! Base structure
@@ -21,7 +21,7 @@ class Base {
 	//@{ Framework details
 	const
 		TEXT_AppName='Fat-Free Framework',
-		TEXT_Version='2.0.12',
+		TEXT_Version='2.0.13',
 		TEXT_AppURL='http://fatfree.sourceforge.net';
 	//@}
 
@@ -243,7 +243,7 @@ class Base {
 	static function bytes($str) {
 		$greek='KMGT';
 		$exp=strpbrk($str,$greek);
-		return pow(1024,strpos($greek,$exp)+1)*(int)$str;
+		return $exp?pow(1024,strpos($greek,$exp)+1)*(int)$str:$str;
 	}
 
 	/**
@@ -318,7 +318,7 @@ class Base {
 			else {
 				if (preg_match('/@(\w+)/',$match,$token))
 					// Token found
-					$match=&self::ref($token[1]);
+					$match=self::ref($token[1]);
 				if ($set) {
 					// Create property/array element if not found
 					if ($obj) {
@@ -358,12 +358,6 @@ class Base {
 					return self::$null;
 			}
 			$i++;
-		}
-		if ($set && count($matches)>1 &&
-			preg_match('/GET|POST|COOKIE/',$matches[0],$php)) {
-			// Sync with REQUEST
-			$req=&self::ref(preg_replace('/^'.$php[0].'\b/','REQUEST',$key));
-			$req=$var;
 		}
 		return $var;
 	}
@@ -790,6 +784,11 @@ class F3 extends Base {
 			}
 		}
 		$var=$val;
+		if (preg_match('/^(?:GET|POST|COOKIE)/',$key,$php)) {
+			// Sync with REQUEST
+			$var=&self::ref(preg_replace('/^'.$php[0].'\b/','REQUEST',$key));
+			$var=$val;
+		}
 		if (preg_match('/LANGUAGE|LOCALES/',$key) && class_exists('ICU'))
 			// Load appropriate dictionaries
 			ICU::load();
@@ -799,7 +798,7 @@ class F3 extends Base {
 			date_default_timezone_set($val);
 		// Initialize cache if explicitly defined
 		elseif ($key=='CACHE' && $val)
-			self::$vars['CACHE']=Cache::load();
+			self::$vars['CACHE']=Cache::load($val);
 		if ($persist) {
 			$hash='var.'.self::hash(self::remix($key));
 			Cache::set($hash,$val);
@@ -976,14 +975,21 @@ class F3 extends Base {
 						// Section
 						$sec=strtolower($parts[2]);
 					elseif (isset($parts[3]) && $parts[3]) {
+						$parts[4]=preg_replace('/(?<=")(.+?)(?=")/',
+							"\x00\\1",$parts[4]);
 						// Key-value pair
 						$csv=array_map(
 							function($val) {
+								$q='';
+								if (preg_match('/^\x00(.+)/',$val,$match)) {
+									$q='"';
+									$val=$match[1];
+								}
 								$val=trim($val);
 								return is_numeric($val) ||
 									preg_match('/^\w+$/i',$val) &&
 									defined($val)?
-									eval('return '.$val.';'):$val;
+									eval('return '.$q.$val.$q.';'):$val;
 							},
 							str_getcsv($parts[4])
 						);
@@ -1021,9 +1027,10 @@ class F3 extends Base {
 			@public
 	**/
 	static function htmlencode($str,$all=FALSE) {
-		return call_user_func(
-			$all?'htmlentities':'htmlspecialchars',
-			$str,ENT_COMPAT,self::$vars['ENCODING'],TRUE);
+		return is_string($str)?
+			call_user_func($all?'htmlentities':'htmlspecialchars',
+				$str,ENT_COMPAT,self::$vars['ENCODING'],FALSE):
+			$str;
 	}
 
 	/**
@@ -1034,9 +1041,11 @@ class F3 extends Base {
 			@public
 	**/
 	static function htmldecode($str,$all=FALSE) {
-		return $all?
-			html_entity_decode($str,ENT_COMPAT,self::$vars['ENCODING']):
-			htmlspecialchars_decode($str,ENT_COMPAT);
+		return is_string($str)?
+			($all?
+				html_entity_decode($str,ENT_COMPAT,self::$vars['ENCODING']):
+				htmlspecialchars_decode($str,ENT_COMPAT)):
+			$str;
 	}
 
 	/**
@@ -1276,7 +1285,6 @@ class F3 extends Base {
 			trigger_error(self::TEXT_NoRoutes);
 			return;
 		}
-		$found=FALSE;
 		$allowed=array();
 		// Detailed routes get matched first
 		krsort(self::$vars['ROUTES']);
@@ -1306,7 +1314,7 @@ class F3 extends Base {
 					self::reroute(substr($path,0,-1).
 						($query?('?'.$query):''));
         } DCA this strips off terminating slashes */
-				$found=TRUE;
+				self::$vars['PATTERN']=$uri;
 				list($funcs,$ttl,$throttle,$hotlink)=$proc;
 				if (!$hotlink && isset(self::$vars['HOTLINK']) &&
 					isset($_SERVER['HTTP_REFERER']) &&
@@ -1394,10 +1402,9 @@ class F3 extends Base {
 				if (strlen(self::$vars['RESPONSE']) && !self::$vars['QUIET'])
 					// Display response
 					echo self::$vars['RESPONSE'];
-			}
-			if ($found)
 				// Hail the conquering hero
 				return;
+			}
 			$allowed=array_keys($route);
 		}
 		if (!$allowed) {
@@ -1529,22 +1536,17 @@ class F3 extends Base {
 								);
 								return;
 							}
-							$out=call_user_func($func,$val,$field);
 							$found=TRUE;
-							if (!$assign)
-								return $out;
-							if ($out)
+							$out=call_user_func($func,$val,$field);
+							if ($assign && $out)
 								$key=$out;
-							elseif ($assign && $out)
-								$key=$val;
 						}
 					}
 				}
-		if (!$found) {
+		if (!$found)
 			// Invalid handler
 			trigger_error(sprintf(self::TEXT_Form,$field));
-			return;
-		}
+		return;
 	}
 
 	/**
@@ -1819,6 +1821,8 @@ class F3 extends Base {
 			'ENCODING'=>$charset,
 			// Last error
 			'ERROR'=>NULL,
+			// Auto-escape feature
+			'ESCAPE'=>FALSE,
 			// Allow/prohibit framework class extension
 			'EXTEND'=>TRUE,
 			// IP addresses exempt from spam detection
@@ -2067,13 +2071,13 @@ class Cache extends Base {
 			case 'shmop':
 				if ($ref=self::$ref) {
 					$data=self::mutex(
-						__FILE__,
 						function() use($ref,$ndx) {
 							$dir=unserialize(trim(shmop_read($ref,0,0xFFFF)));
 							return isset($dir[$ndx])?
 								shmop_read($ref,$dir[$ndx][0],$dir[$ndx][1]):
 								FALSE;
-						}
+						},
+						self::$vars['TEMP'].$_SERVER['SERVER_NAME']
 					);
 					if ($data)
 						break;
@@ -2094,7 +2098,7 @@ class Cache extends Base {
 				list($time,$ttl,$val)=unserialize($data);
 			if (!$ttl || $time+$ttl>microtime(TRUE))
 				return $time;
-			$this->clear($key);
+			self::clear($key);
 		}
 		return FALSE;
 	}
@@ -2120,7 +2124,6 @@ class Cache extends Base {
 			case 'shmop':
 				return ($ref=self::$ref)?
 					self::mutex(
-						__FILE__,
 						function() use($ref,$ndx,$data) {
 							$dir=unserialize(trim(shmop_read($ref,0,0xFFFF)));
 							$edge=0xFFFF;
@@ -2130,7 +2133,8 @@ class Cache extends Base {
 							unset($dir[$ndx]);
 							$dir[$ndx]=array($edge,strlen($data));
 							shmop_write($ref,serialize($dir).chr(0),0);
-						}
+						},
+						self::$vars['TEMP'].$_SERVER['SERVER_NAME']
 					):
 					FALSE;
 			case 'memcache':
@@ -2171,18 +2175,17 @@ class Cache extends Base {
 			case 'shmop':
 				return ($ref=self::$ref) &&
 					self::mutex(
-						__FILE__,
 						function() use($ref,$ndx) {
 							$dir=unserialize(trim(shmop_read($ref,0,0xFFFF)));
 							unset($dir[$ndx]);
 							shmop_write($ref,serialize($dir).chr(0),0);
-						}
+						},
+						self::$vars['TEMP'].$_SERVER['SERVER_NAME']
 					);
 			case 'memcache':
 				return memcache_delete(self::$ref,$ndx);
 			case 'folder':
-				return is_file($file=self::$ref.$ndx) &&
-					self::mutex($file,'unlink',array($file));
+				return is_file($file=self::$ref.$ndx) && unlink($file);
 		}
 	}
 
@@ -2204,16 +2207,19 @@ class Cache extends Base {
 		self::$engine=array('type'=>$parts[0],'data'=>NULL);
 		self::$ref=NULL;
 		if ($parts[0]=='shmop') {
+			$self=__CLASS__;
 			self::$ref=self::mutex(
-				__FILE__,
-				function() {
-					$ref=@shmop_open(ftok(__FILE__,'C'),'c',0644,
-						Base::instance()->bytes(ini_get('memory_limit')));
+				function() use($self) {
+					$ref=@shmop_open($inode=fileinode(__FILE__),'c',0644,
+						$self::bytes(ini_get('memory_limit')));
 					if ($ref && !unserialize(trim(shmop_read($ref,0,0xFFFF))))
 						shmop_write($ref,serialize(array()).chr(0),0);
 					return $ref;
-				}
+				},
+				self::$vars['TEMP'].$_SERVER['SERVER_NAME']
 			);
+			if (!self::$ref)
+				return self::load('folder=cache/');
 		}
 		elseif (isset($parts[1])) {
 			if ($parts[0]=='memcache') {
