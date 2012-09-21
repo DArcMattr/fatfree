@@ -4,7 +4,7 @@ class Main extends F3instance {
 
 	function hotlink() {
 		$this->set('HOTLINK','/error');
-		file_put_contents('f3hotlink.tmp',md5('f3hotlink'));
+		file_put_contents('temp/f3hotlink.tmp',md5('f3hotlink'));
 		$this->clear('ROUTES');
 		$this->route('GET /',
 			function() {
@@ -27,8 +27,8 @@ class Main extends F3instance {
 		);
 
 		$this->expect(
-			file_exists('f3hotlink.tmp') &&
-			file_get_contents('f3hotlink.tmp')==md5('f3hotlink'),
+			file_exists('temp/f3hotlink.tmp') &&
+			file_get_contents('temp/f3hotlink.tmp')==md5('f3hotlink'),
 			'Hotlink test succeeded',
 			'Hotlink test failed - you shouldn\'t reload this page'
 		);
@@ -457,7 +457,7 @@ class Main extends F3instance {
 
 		$this->set('a',1);
 		$this->set('b',2);
-		$this->set('c',array('{{@a}}',array('{{@b}}')));
+		$this->set('c',array('{{@a}}',array('{{@b}}')),FALSE,TRUE);
 		$this->expect(
 			$this->get('c')==array(1,array(2)),
 			'Deeply-nested tokens in framework array variable replaced',
@@ -569,7 +569,7 @@ class Main extends F3instance {
 		$this->config('inc/config.ini');
 
 		$this->expect(
-			$this->get('num')==123,
+			$this->get('num')===123,
 			'Integer variable found',
 			'Missing integer variable'
 		);
@@ -581,13 +581,13 @@ class Main extends F3instance {
 		);
 
 		$this->expect(
-			$this->get('hash')==array('x'=>1,'y'=>2,'z'=>3),
+			$this->get('hash')===array('x'=>1,'y'=>2,'z'=>3),
 			'Hash variable found',
 			'Missing hash variable'
 		);
 
 		$this->expect(
-			$this->get('list')==array(7,8,9),
+			$this->get('list')===array(7,8,9),
 			'List variable found',
 			'Missing list variable'
 		);
@@ -596,6 +596,12 @@ class Main extends F3instance {
 			$this->get('mix')==array("this",123.45,FALSE),
 			'Mixed array variable found',
 			'Missing mixed array variable'
+		);
+
+		$this->expect(
+			$this->get('long')==="12345678901234567890",
+			'Long integer (as string) preserved',
+			'Long integer converted to number'
 		);
 
 		$this->set('QUIET',TRUE);
@@ -690,7 +696,7 @@ class Main extends F3instance {
 	}
 
 	function redirect() {
-		file_put_contents('f3routing.tmp',md5('f3routing'));
+		file_put_contents('temp/f3routing.tmp',md5('f3routing'));
 		$this->reroute('/routing');
 	}
 
@@ -704,8 +710,8 @@ class Main extends F3instance {
 		);
 
 		$this->expect(
-			file_exists('f3routing.tmp') &&
-			file_get_contents('f3routing.tmp')==md5('f3routing'),
+			file_exists('temp/f3routing.tmp') &&
+			file_get_contents('temp/f3routing.tmp')==md5('f3routing'),
 			'Rerouting succeeded',
 			'Rerouting did not work as expected - you shouldn\'t reload this page'
 		);
@@ -1165,10 +1171,11 @@ class Main extends F3instance {
 			$this->mock('GET /caching');
 			sleep(1);
 			$this->run();
-			$cached=Cache::cached('url.'.$this->hash('GET /caching'));
+			$cached=Cache::cached('url.'.
+				$this->hash('GET '.$this->get('BASE').'/caching'));
+			$this->set('QUIET',FALSE);
 			if (is_bool($cached))
 				break;
-			$this->set('QUIET',FALSE);
 			if (!isset($saved))
 				$saved=$cached;
 			if ($saved!=$cached)
@@ -1247,7 +1254,7 @@ class Main extends F3instance {
 			$_POST['field']=='alert(\'hello\');' &&
 			$_POST['field']=='alert(\'hello\');',
 			'Framework sanitizes underlying $_POST and $_POST variables',
-			'Framework didn\'t sanitize $_POST/$_POST: '.$_POST['field']
+			'Framework didn\'t sanitize $_POST: '.$this->stringify($_POST['field'])
 		);
 
 		$this->set('POST',array('field'=>'<p><b>hello</b> world</p>'));
@@ -2952,7 +2959,7 @@ class Main extends F3instance {
 
 				$this->expect(
 					(is_object($product->_id)) && $product->_id==$id,
-					'M2 MongoID is intact after object update: {{@product->_id}}',
+					'M2 MongoID is intact after object update: '.$product->_id,
 					'M2 MongoID sync issue'
 				);
 
@@ -3381,7 +3388,7 @@ class Main extends F3instance {
 			$this->set('QUIET',TRUE);
 			$this->expect(
 				is_array($geocode),
-				'Geocode API call success',
+				'Geocode API call success: '.$this->stringify($geocode),
 				'Geocode API call failure: '.$this->stringify($geocode)
 			);
 			$this->set('QUIET',FALSE);
@@ -3428,7 +3435,7 @@ class Main extends F3instance {
 			$this->set('QUIET',TRUE);
 			$text=Web::http('GET http://'.$_SERVER['HTTP_HOST'].$this->get('BASE').'/minified/simple.css');
 			$this->expect(
-				$text=='div *{text-align:center;}#content{border:1px #000 solid;text-shadow:#ccc -1px -1px 0px;}tr:nth-child(odd) td{line-height:1.2em;}h1[name] span{font-size:12pt;}',
+				$text=='div *{text-align:center;}#content{border:1px #000 solid;text-shadow:#ccc -1px -1px 0px;}tr:nth-child(odd) td{line-height:1.2em;}h1[name] span{font-size:12pt;}.sprite{background:url(./test.jpg) no-repeat;}',
 				'CSS minified properly - necessary (and IE-problematic) spaces preserved',
 				'CSS minified incorrectly: '.$this->stringify($text)
 			);

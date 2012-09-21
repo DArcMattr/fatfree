@@ -12,7 +12,7 @@
 	Bong Cosca <bong.cosca@yahoo.com>
 
 		@package DB
-		@version 2.0.12
+		@version 2.0.13
 **/
 
 //! SQL data access layer
@@ -405,13 +405,12 @@ class DB extends Base {
 			// Default MySQL character set
 			self::$vars['MYSQL']='utf8';
 		if (!$opt)
-			// Append other default options
-			$opt=array(PDO::ATTR_EMULATE_PREPARES=>FALSE)+(
-				extension_loaded('pdo_mysql') &&
-				preg_match('/^mysql:/',$dsn)?
-					array(PDO::MYSQL_ATTR_INIT_COMMAND=>
-						'SET NAMES '.self::$vars['MYSQL']):array()
-			);
+			$opt=array();
+		// Append other default options
+		$opt+=array(PDO::ATTR_EMULATE_PREPARES=>FALSE);
+		if (in_array('mysql',pdo_drivers()) && preg_match('/^mysql:/',$dsn))
+			$opt+=array(PDO::MYSQL_ATTR_INIT_COMMAND=>
+				'SET NAMES '.self::$vars['MYSQL']);
 		list($this->dsn,$this->user,$this->pw,$this->opt)=
 			array($this->resolve($dsn),$user,$pw,$opt);
 		$this->backend=strstr($this->dsn,':',TRUE);
@@ -505,7 +504,7 @@ class Axon extends Base {
 					($group?(' GROUP BY '.$group):'').
 					($seq?(' ORDER BY '.$seq):'').
 					(preg_match('/^mssql|sqlsrv|sybase|dblib$/',
-						$this->backend)?
+						$this->db->backend)?
 						(($ofs?(' OFFSET '.$ofs):'').
 						($limit?(' FETCH '.$limit.' ONLY'):'')):
 						(($limit?(' LIMIT '.$limit):'').
@@ -518,7 +517,7 @@ class Axon extends Base {
 					($group?(' GROUP BY '.$group):'').
 					($seq?(' ORDER BY '.$seq):'').
 					(preg_match('/^mssql|sqlsrv|sybase|dblib$/',
-						$this->backend)?
+						$this->db->backend)?
 						(($ofs?(' OFFSET '.$ofs):'').
 						($limit?(' FETCH '.$limit.' ONLY'):'')):
 						(($limit?(' LIMIT '.$limit):'').
@@ -616,8 +615,8 @@ class Axon extends Base {
 	function found($cond=NULL) {
 		list($result)=$this->db->exec(
 			'SELECT COUNT(*) AS _found FROM '.$this->table.
-				($cond?(' WHERE '.$cond[0]):''),
-				($cond?$cond[1]:NULL)
+				($cond?(' WHERE '.(is_array($cond)?$cond[0]:$cond)):''),
+				($cond && is_array($cond)?$cond[1]:NULL)
 		);
 		return $result['_found'];
 	}
@@ -735,7 +734,7 @@ class Axon extends Base {
 			foreach ($this->fields as $field=>$val)
 				if (isset($this->mod[$field])) {
 					$fields.=($fields?',':'').
-						(preg_match('/^mysql$/',$this->backend)?
+						(preg_match('/^mysql$/',$this->db->backend)?
 							('`'.$field.'`'):$field);
 					$values.=($values?',':'').':'.$field;
 					$bind[':'.$field]=array($val,$this->types[$field]);
@@ -754,7 +753,7 @@ class Axon extends Base {
 			foreach ($this->fields as $field=>$val)
 				if (isset($this->mod[$field])) {
 					$set.=($set?',':'').
-						(preg_match('/^mysql$/',$this->backend)?
+						(preg_match('/^mysql$/',$this->db->backend)?
 							('`'.$field.'`'):$field).'=:'.$field;
 					$bind[':'.$field]=array($val,$this->types[$field]);
 				}
@@ -781,10 +780,9 @@ class Axon extends Base {
 	/**
 		Delete record/s
 			@param $cond mixed
-			@param $force bool
 			@public
 	**/
-	function erase($cond=NULL,$force=FALSE) {
+	function erase($cond=NULL) {
 		if (method_exists($this,'beforeErase') &&
 			$this->beforeErase()===FALSE)
 			return;
