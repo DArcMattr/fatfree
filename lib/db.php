@@ -12,7 +12,7 @@
 	Bong Cosca <bong.cosca@yahoo.com>
 
 		@package DB
-		@version 2.0.13
+		@version 2.1.0
 **/
 
 //! SQL data access layer
@@ -224,14 +224,16 @@ class DB extends Base {
 		$cmd=array(
 			'sqlite2?'=>array(
 				'PRAGMA table_info('.$table.');',
-				'name','pk',1,'type'),
+				'name','pk',1,'type','notnull',0,'dflt_value'),
 			'mysql'=>array(
 				'SHOW columns FROM `'.$this->dbname.'`.'.$table.';',
-				'Field','Key','PRI','Type'),
+				'Field','Key','PRI','Type','Null','YES','Default'),
 			'mssql|sqlsrv|sybase|dblib|pgsql|odbc'=>array(
 				'SELECT '.
 					'c.column_name AS field,'.
 					'c.data_type AS type,'.
+					'c.is_nullable AS nullable,'.
+					'c.column_default AS defaultval,'.
 					't.constraint_type AS pkey '.
 				'FROM information_schema.columns AS c '.
 				'LEFT OUTER JOIN '.
@@ -262,12 +264,15 @@ class DB extends Base {
 							'c.table_catalog':'c.table_schema').
 							'=\''.$this->dbname.'\''):'').
 				';',
-				'field','pkey','PRIMARY KEY','type'),
+				'field','pkey','PRIMARY KEY',
+				'type','nullable','YES','defaultval'),
 			'ibm'=>array(
 				'SELECT DISTINCT '.
 					'c.colname AS field,'.
 					'c.typename AS type,'.
-					'tc.type AS key '.
+					'c.nulls AS null,'.
+					'tc.type AS key'.
+					'c.default AS default'.
 				'FROM syscat.columns AS c '.
 				'LEFT JOIN '.
 					'(syscat.keycoluse AS k '.
@@ -281,7 +286,7 @@ class DB extends Base {
 						'c.tabname=k.tabname AND '.
 						'c.colname=k.colname '.
 				'WHERE UPPER(c.tabname)=\''.strtoupper($table).'\';',
-				'field','key','P','type'),
+				'field','key','P','type','null','Y','default'),
 		);
 		$match=FALSE;
 		foreach ($cmd as $backend=>$val)
@@ -303,7 +308,10 @@ class DB extends Base {
 			'field'=>$val[1],
 			'pkname'=>$val[2],
 			'pkval'=>$val[3],
-			'type'=>$val[4]
+			'type'=>$val[4],
+			'nullname'=>$val[5],
+			'nullval'=>$val[6],
+			'default'=>$val[7]
 		);
 	}
 
@@ -458,7 +466,12 @@ class Axon extends Base {
 	function factory($row) {
 		$self=get_class($this);
 		$axon=new $self($this->table,$this->db,FALSE);
+		list($axon->db,$axon->table,$axon->types)=
+			array($this->db,$this->table,$this->types);
 		foreach ($row as $field=>$val) {
+			if (method_exists($axon,'beforeLoad') &&
+				$axon->beforeLoad()===FALSE)
+				continue;
 			if (array_key_exists($field,$this->fields)) {
 				$axon->fields[$field]=$val;
 				if ($this->pkeys &&
@@ -469,6 +482,8 @@ class Axon extends Base {
 				$axon->adhoc[$field]=array($this->adhoc[$field][0],$val);
 			if ($axon->empty && $val)
 				$axon->empty=FALSE;
+			if (method_exists($axon,'afterLoad'))
+				$axon->afterLoad();
 		}
 		return $axon;
 	}
@@ -743,7 +758,11 @@ class Axon extends Base {
 				$this->db->exec(
 					'INSERT INTO '.$this->table.' ('.$fields.') '.
 						'VALUES ('.$values.');',$bind);
-			$this->_id=$this->db->pdo->lastinsertid();
+			$this->_id=$this->db->pdo->lastinsertid(
+				preg_match('/pgsql/',$this->db->backend)?
+					($this->table.'_'.end($this->pkeys).'_seq'):
+					NULL
+			);
 			if ($id)
 				$this->pkeys[$id]=$this->_id;
 		}
@@ -973,7 +992,7 @@ class Axon extends Base {
 			@public
 	**/
 	function __unset($field) {
-		trigger_error(str_replace('@FIELD',$field,self::TEXT_AxonCantUnset));
+		trigger_error(self::TEXT_AxonCantUnset);
 	}
 
 	/**

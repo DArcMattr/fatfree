@@ -12,7 +12,7 @@
 	Bong Cosca <bong.cosca@yahoo.com>
 
 		@package SMTP
-		@version 2.0.13
+		@version 2.1.0
 **/
 
 //! SMTP plugin
@@ -34,7 +34,7 @@ class SMTP extends Base {
 		SMTP_Content='Content-Type',
 		SMTP_Disposition='Content-Disposition',
 		SMTP_Encoding='Content-Transfer-Encoding',
-		SMTP_MIME='MIME-Type';
+		SMTP_MIME='MIME-Version';
 	//@}
 
 	const
@@ -176,8 +176,8 @@ class SMTP extends Base {
 			$this->dialog(self::SMTP_Content.': '.$type,FALSE);
 			$this->dialog(NULL,FALSE);
 			$this->dialog($message,FALSE);
-			$this->dialog('--'.$hash,FALSE);
 			foreach ($this->attachments as $attachment) {
+				$this->dialog('--'.$hash,FALSE);
 				$this->dialog(self::SMTP_Content.': '.
 					'application/octet-stream',FALSE);
 				$this->dialog(self::SMTP_Encoding.': base64',FALSE);
@@ -187,7 +187,7 @@ class SMTP extends Base {
 				$this->dialog(chunk_split(base64_encode(
 					self::getfile($attachment))),FALSE);
 			}
-			$this->dialog('--'.$hash,FALSE);
+			$this->dialog('--'.$hash.'--',FALSE);
 		}
 		else {
 			// Send mail headers
@@ -254,7 +254,8 @@ class SMTP extends Base {
 	**/
 	function __destruct() {
 		$this->dialog('QUIT');
-		fclose($this->socket);
+		if ($this->socket)
+			fclose($this->socket);
 	}
 
 }

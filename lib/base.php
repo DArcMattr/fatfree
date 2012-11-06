@@ -12,7 +12,7 @@
 	Bong Cosca <bong.cosca@yahoo.com>
 
 		@package Base
-		@version 2.0.13
+		@version 2.1.0
 **/
 
 //! Base structure
@@ -21,7 +21,7 @@ class Base {
 	//@{ Framework details
 	const
 		TEXT_AppName='Fat-Free Framework',
-		TEXT_Version='2.0.13',
+		TEXT_Version='2.1.0',
 		TEXT_AppURL='http://fatfree.sourceforge.net';
 	//@}
 
@@ -127,6 +127,7 @@ class Base {
 	//@{ Global variables and references to constants
 	protected static
 		$vars,
+		$classes,
 		$null=NULL,
 		$true=TRUE,
 		$false=FALSE;
@@ -318,7 +319,7 @@ class Base {
 			else {
 				if (preg_match('/@(\w+)/',$match,$token))
 					// Token found
-					$match=self::resolve('{{'.$token[0].'}}');
+					$match=self::resolve('{{'.$match.'}}');
 				if ($set) {
 					// Create property/array element if not found
 					if ($obj) {
@@ -551,13 +552,17 @@ class Base {
 		Lock-aware file writer
 			@param $file string
 			@param $data string
+			@param $append bool
 			@public
 	**/
-	static function putfile($file,$data) {
+	static function putfile($file,$data,$append=FALSE) {
 		if (!function_exists('flock'))
 			$out=self::mutex(
 				function() use($file,$data) {
-					return file_put_contents($file,$data,LOCK_EX);
+					$flag=LOCK_EX;
+					if ($append)
+						$flag=$flag|FILE_APPEND;
+					return file_put_contents($file,$data,$arg);
 				},
 				$file
 			);
@@ -968,7 +973,9 @@ class F3 extends Base {
 			$cfg=array();
 			$sec='';
 			if ($ini=file($file))
-				foreach ($ini as $line) {
+				for ($i=0,$c=count($ini);$i<$c;$i++) {
+					// cut off CR / LF
+					$line = rtrim($ini[$i],"\r\n");
 					preg_match('/^\s*(?:(;)|\[(.+)\]|(.+?)\s*=\s*(.+))/',
 						$line,$parts);
 					if (isset($parts[1]) && $parts[1])
@@ -978,6 +985,17 @@ class F3 extends Base {
 						// Section
 						$sec=strtolower($parts[2]);
 					elseif (isset($parts[3]) && $parts[3]) {
+						if (substr($line, -1) == "\\") {
+							// multiline string
+							$lines = rtrim($parts[4],"\\");
+							while (++$i < $c) {
+								$line = rtrim($ini[$i],"\r\n");
+								$lines.= PHP_EOL .rtrim($line,"\\");
+								if (substr($line,-1) !== "\\")
+									break;
+							}
+							$parts[4] = $lines;
+						}
 						$parts[4]=preg_replace('/(?<=")(.+?)(?=")/',
 							"\x00\\1",$parts[4]);
 						// Key-value pair
@@ -1177,9 +1195,7 @@ class F3 extends Base {
 				$ref=new ReflectionMethod($class,$func);
 				self::route(
 					$method.' '.$url,
-					$ref->isStatic()?
-						array($class,$func):
-						array(new $class,$func),
+					$class.($ref->isStatic()?'::':'->').$func,
 					$ttl,$throttle,$hotlink
 				);
 				unset($ref);
@@ -1195,7 +1211,6 @@ class F3 extends Base {
 			@public
 	**/
 	static function call($funcs,$listen=FALSE) {
-		$classes=array();
 		$funcs=is_string($funcs)?self::split($funcs):array($funcs);
 		$out=NULL;
 		foreach ($funcs as $func) {
@@ -1237,21 +1252,29 @@ class F3 extends Base {
 			$oop=is_array($func) &&
 				(is_object($func[0]) || is_string($func[0]));
 			if ($listen && $oop &&
-				method_exists($func[0],$before='beforeRoute') &&
-				!in_array($func[0],$classes)) {
+				method_exists($func[0],$before='beforeRoute')) {
 				// Execute beforeRoute() once per class
-				if (call_user_func(array($func[0],$before))===FALSE)
-					return FALSE;
-				$classes[]=is_object($func[0])?get_class($func[0]):$func[0];
+				$key=is_object($func[0])?get_class($func[0]):$func[0];
+				if (!isset(self::$classes[$key]) ||
+					!isset(self::$classes[$key][0]) ||
+					!self::$classes[$key][0]) {
+					self::$classes[$key][0]=TRUE;
+					if (call_user_func(array($func[0],$before))===FALSE)
+						return FALSE;
+				}
 			}
 			$out=call_user_func($func);
 			if ($listen && $oop &&
-				method_exists($func[0],$after='afterRoute') &&
-				!in_array($func[0],$classes)) {
+				method_exists($func[0],$after='afterRoute')) {
 				// Execute afterRoute() once per class
-				if (call_user_func(array($func[0],$after))===FALSE)
-					return FALSE;
-				$classes[]=is_object($func[0])?get_class($func[0]):$func[0];
+				$key=is_object($func[0])?get_class($func[0]):$func[0];
+				if (!isset(self::$classes[$key]) ||
+					!isset(self::$classes[$key][1]) ||
+					!self::$classes[$key][1]) {
+					self::$classes[$key][1]=TRUE;
+					if (call_user_func(array($func[0],$after))===FALSE)
+						return FALSE;
+				}
 			}
 		}
 		return $out;
@@ -1290,8 +1313,9 @@ class F3 extends Base {
 		// Detailed routes get matched first
 		krsort(self::$vars['ROUTES']);
 		$time=time();
+		$case=self::$vars['CASELESS']?'i':'';
 		$req=preg_replace('/^'.preg_quote(self::$vars['BASE'],'/').
-			'\b(.+)/'.(self::$vars['CASELESS']?'i':''),'\1',
+			'\b(.+)/'.$case,'\1',
 			rawurldecode($_SERVER['REQUEST_URI']));
 		foreach (self::$vars['ROUTES'] as $uri=>$route) {
 			if (!preg_match('/^'.
@@ -1301,7 +1325,7 @@ class F3 extends Base {
 					'(?P<\1>[^\/&\?]+)',
 					// Wildcard character in URI
 					str_replace('\*','(.*)',preg_quote($uri,'/'))
-				).'\/?(?:\?.*)?$/'.(self::$vars['CASELESS']?'':'i').'um',
+				).'\/?(?:\?.*)?$/'.$case.'um',
 				$req,$args))
 				continue;
 			$wild=is_int(strpos($uri,'/*'));
@@ -1806,8 +1830,9 @@ class F3 extends Base {
 			self::mock('GET '.$_SERVER['argv'][1]);
 		}
 		// Hydrate framework variables
-		$base=self::fixslashes(
-			preg_replace('/\/[^\/]+$/','',$_SERVER['SCRIPT_NAME']));
+		$base=implode('/',array_map('urlencode',
+			explode('/',self::fixslashes(
+			preg_replace('/\/[^\/]+$/','',$_SERVER['SCRIPT_NAME'])))));
 		$scheme=PHP_SAPI=='cli'?
 			NULL:
 			isset($_SERVER['HTTPS']) && $_SERVER['HTTPS']!='off' ||
@@ -2078,23 +2103,12 @@ class Cache extends Base {
 				if ($data=xcache_get($ndx))
 					break;
 				return FALSE;
-			case 'shmop':
-				if ($ref=self::$ref) {
-					$data=self::mutex(
-						function() use($ref,$ndx) {
-							$dir=unserialize(trim(shmop_read($ref,0,0xFFFF)));
-							return isset($dir[$ndx])?
-								shmop_read($ref,$dir[$ndx][0],$dir[$ndx][1]):
-								FALSE;
-						},
-						self::$vars['TEMP'].$_SERVER['SERVER_NAME']
-					);
-					if ($data)
-						break;
-				}
-				return FALSE;
 			case 'memcache':
 				if ($data=memcache_get(self::$ref,$ndx))
+					break;
+				return FALSE;
+			case 'wincache':
+				if ($data=wincache_ucache_get($ndx))
 					break;
 				return FALSE;
 			case 'folder':
@@ -2131,24 +2145,10 @@ class Cache extends Base {
 				return apc_store($ndx,$data,$ttl);
 			case 'xcache':
 				return xcache_set($ndx,$data,$ttl);
-			case 'shmop':
-				return ($ref=self::$ref)?
-					self::mutex(
-						function() use($ref,$ndx,$data) {
-							$dir=unserialize(trim(shmop_read($ref,0,0xFFFF)));
-							$edge=0xFFFF;
-							foreach ($dir as $stub)
-								$edge=$stub[0]+$stub[1];
-							shmop_write($ref,$data,$edge);
-							unset($dir[$ndx]);
-							$dir[$ndx]=array($edge,strlen($data));
-							shmop_write($ref,serialize($dir).chr(0),0);
-						},
-						self::$vars['TEMP'].$_SERVER['SERVER_NAME']
-					):
-					FALSE;
 			case 'memcache':
 				return memcache_set(self::$ref,$ndx,$data,0,$ttl);
+			case 'wincache':
+				return wincache_ucache_set($ndx,$data,$ttl);
 			case 'folder':
 				return self::putfile(self::$ref.$ndx,$data);
 		}
@@ -2182,18 +2182,10 @@ class Cache extends Base {
 				return apc_delete($ndx);
 			case 'xcache':
 				return xcache_unset($ndx);
-			case 'shmop':
-				return ($ref=self::$ref) &&
-					self::mutex(
-						function() use($ref,$ndx) {
-							$dir=unserialize(trim(shmop_read($ref,0,0xFFFF)));
-							unset($dir[$ndx]);
-							shmop_write($ref,serialize($dir).chr(0),0);
-						},
-						self::$vars['TEMP'].$_SERVER['SERVER_NAME']
-					);
 			case 'memcache':
 				return memcache_delete(self::$ref,$ndx);
+			case 'wincache':
+				return wincache_ucache_delete($ndx);
 			case 'folder':
 				return is_file($file=self::$ref.$ndx) && unlink($file);
 		}
@@ -2208,30 +2200,15 @@ class Cache extends Base {
 		if (is_bool($dsn)) {
 			// Auto-detect backend
 			$ext=array_map('strtolower',get_loaded_extensions());
-			$grep=preg_grep('/^(apc|xcache|shmop)/',$ext);
+			$grep=preg_grep('/^(apc|wincache|xcache)/',$ext);
 			$dsn=$grep?current($grep):'folder=cache/';
 		}
 		$parts=explode('=',$dsn);
-		if (!preg_match('/apc|xcache|shmop|folder|memcache/',$parts[0]))
+		if (!preg_match('/apc|wincache|xcache|folder|memcache/',$parts[0]))
 			return;
 		self::$engine=array('type'=>$parts[0],'data'=>NULL);
 		self::$ref=NULL;
-		if ($parts[0]=='shmop') {
-			$self=__CLASS__;
-			self::$ref=self::mutex(
-				function() use($self) {
-					$ref=@shmop_open(fileinode(__FILE__),'c',0644,
-						$self::bytes(ini_get('memory_limit')));
-					if ($ref && !unserialize(trim(shmop_read($ref,0,0xFFFF))))
-						shmop_write($ref,serialize(array()).chr(0),0);
-					return $ref;
-				},
-				self::$vars['TEMP'].$_SERVER['SERVER_NAME']
-			);
-			if (!self::$ref)
-				return self::load('folder=cache/');
-		}
-		elseif (isset($parts[1])) {
+		if (isset($parts[1])) {
 			if ($parts[0]=='memcache') {
 				if (extension_loaded('memcache'))
 					foreach (self::split($parts[1]) as $server) {
