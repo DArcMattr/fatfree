@@ -466,8 +466,6 @@ class Axon extends Base {
 	function factory($row) {
 		$self=get_class($this);
 		$axon=new $self($this->table,$this->db,FALSE);
-		list($axon->db,$axon->table,$axon->types)=
-			array($this->db,$this->table,$this->types);
 		foreach ($row as $field=>$val) {
 			if (method_exists($axon,'beforeLoad') &&
 				$axon->beforeLoad()===FALSE)
@@ -746,7 +744,7 @@ class Axon extends Base {
 			// Insert record
 			$fields=$values='';
 			$bind=array();
-			foreach ($this->fields as $field=>$val)
+			foreach ($this->fields as $field=>$val) {
 				if (isset($this->mod[$field])) {
 					$fields.=($fields?',':'').
 						(preg_match('/^mysql$/',$this->db->backend)?
@@ -754,6 +752,7 @@ class Axon extends Base {
 					$values.=($values?',':'').':'.$field;
 					$bind[':'.$field]=array($val,$this->types[$field]);
 				}
+			}
 			if ($bind)
 				$this->db->exec(
 					'INSERT INTO '.$this->table.' ('.$fields.') '.
